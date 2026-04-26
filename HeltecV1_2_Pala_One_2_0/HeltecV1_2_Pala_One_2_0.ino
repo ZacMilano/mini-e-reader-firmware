@@ -83,7 +83,8 @@ enum Mode {
   MODE_LIST,
   MODE_BM_BOOK_SELECT,
   MODE_BM_LIST,
-  MODE_BM_PREVIEW
+  MODE_BM_PREVIEW,
+  MODE_SETTINGS
 };
 
 enum ReaderLongPressAction {
@@ -97,6 +98,7 @@ enum LibraryEntryType {
   LIB_ENTRY_BOOKMARKS,
   LIB_ENTRY_LIST,
   LIB_ENTRY_ABOUT,
+  LIB_ENTRY_SETTINGS,
   LIB_ENTRY_UPLOAD
 };
 
@@ -120,6 +122,13 @@ struct RuntimeSettings {
   uint32_t sleepSecs = 120;
   int lineGap = 0;
   int readerLongPressAction = LONGPRESS_BOOKMARK;
+  int orientation = 1;  // 0 = normal (button on bottom), 1 = flipped (button on top)
+};
+
+struct SettingsUiState {
+  int selectedItem = 0;
+  bool editing = false;
+  int editValue = 0;
 };
 
 struct LibraryState {
@@ -276,6 +285,7 @@ ListState g_list;
 UploadState g_upload;
 BatteryState g_battery;
 ButtonState btns;
+SettingsUiState g_settingsUi;
 OffsetCacheEntry g_offsetCache[OFFSET_CACHE_SIZE];
 uint32_t g_offsetCacheStamp = 1;
 
@@ -364,6 +374,7 @@ static void buildLibraryEntries();
 
 static void drawLibrary();
 static void drawAbout();
+static void drawSettings();
 static void drawListScreen();
 static void drawBookmarksBookSelect();
 static void drawBookmarksList();
@@ -470,7 +481,10 @@ static void loadSettings() {
 
   g_settings.lineGap = prefs.getInt("cfg_lgap", 0);
   if (g_settings.lineGap < 0) g_settings.lineGap = 0;
-  if (g_settings.lineGap > 4) g_settings.lineGap = 4;
+  if (g_settings.lineGap > 8) g_settings.lineGap = 8;
+
+  g_settings.orientation = prefs.getInt("cfg_orient", 1);
+  if (g_settings.orientation != 0 && g_settings.orientation != 1) g_settings.orientation = 1;
 
   g_settings.readerLongPressAction = LONGPRESS_BOOKMARK;
   invalidateMetrics();
@@ -905,6 +919,10 @@ static String pageCachePathForBook(const String& path) {
   return String("/pc_") + prefKeyForBook(path) + ".bin";
 }
 
+static uint32_t currentLayoutSignature() {
+  return ((uint32_t)(g_settings.fontSize & 0xFF) << 8) | (uint32_t)(g_settings.lineGap & 0xFF);
+}
+
 static bool loadPageOffsetCacheForBook(const String& path, size_t expectedSize) {
   String cachePath = pageCachePathForBook(path);
   File f = FS.open(cachePath, "r");
@@ -912,13 +930,16 @@ static bool loadPageOffsetCacheForBook(const String& path, size_t expectedSize) 
 
   uint32_t magic = 0;
   uint32_t fileSize = 0;
+  uint32_t layoutSig = 0;
   uint16_t count = 0;
 
   if (f.read((uint8_t*)&magic, sizeof(magic)) != sizeof(magic)) { f.close(); return false; }
   if (f.read((uint8_t*)&fileSize, sizeof(fileSize)) != sizeof(fileSize)) { f.close(); return false; }
+  if (f.read((uint8_t*)&layoutSig, sizeof(layoutSig)) != sizeof(layoutSig)) { f.close(); return false; }
   if (f.read((uint8_t*)&count, sizeof(count)) != sizeof(count)) { f.close(); return false; }
 
-  if (magic != 0x50434F46UL || fileSize != (uint32_t)expectedSize || count == 0 || count > MAX_PAGES) {
+  if (magic != 0x50434F47UL || fileSize != (uint32_t)expectedSize ||
+      layoutSig != currentLayoutSignature() || count == 0 || count > MAX_PAGES) {
     f.close();
     return false;
   }
@@ -947,12 +968,14 @@ static void savePageOffsetCacheForBook(const String& path, size_t fileSize) {
   File f = FS.open(cachePath, "w");
   if (!f) return;
 
-  uint32_t magic = 0x50434F46UL;
+  uint32_t magic = 0x50434F47UL;
   uint32_t size32 = (uint32_t)fileSize;
+  uint32_t layoutSig = currentLayoutSignature();
   uint16_t count16 = (uint16_t)min(g_reader.knownPages, MAX_PAGES);
 
   f.write((const uint8_t*)&magic, sizeof(magic));
   f.write((const uint8_t*)&size32, sizeof(size32));
+  f.write((const uint8_t*)&layoutSig, sizeof(layoutSig));
   f.write((const uint8_t*)&count16, sizeof(count16));
   f.write((const uint8_t*)g_reader.pageOffsets, count16 * sizeof(uint32_t));
   f.close();
@@ -1179,6 +1202,7 @@ static String libraryEntryLabel(int idx) {
     case LIB_ENTRY_BOOKMARKS: return "Bookmarks";
     case LIB_ENTRY_LIST:      return "List";
     case LIB_ENTRY_ABOUT:     return "Device";
+    case LIB_ENTRY_SETTINGS:  return "Settings";
     case LIB_ENTRY_UPLOAD:    return "Upload";
   }
   return "";
@@ -1231,6 +1255,12 @@ static void buildLibraryEntries() {
   }
   if (g_library.entryCount < MAX_LIBRARY_ENTRIES) {
     g_library.entryTypes[g_library.entryCount] = LIB_ENTRY_ABOUT;
+    g_library.entryRefs[g_library.entryCount] = -1;
+    g_library.entryDepths[g_library.entryCount] = 0;
+    g_library.entryCount++;
+  }
+  if (g_library.entryCount < MAX_LIBRARY_ENTRIES) {
+    g_library.entryTypes[g_library.entryCount] = LIB_ENTRY_SETTINGS;
     g_library.entryRefs[g_library.entryCount] = -1;
     g_library.entryDepths[g_library.entryCount] = 0;
     g_library.entryCount++;
@@ -1714,7 +1744,7 @@ static void drawBatteryTopRight() {
 // ============================================================================
 static void beginPageCanvas(bool clearMem = true) {
   if (clearMem) display.clearMemory();
-  display.setRotation(1);
+  display.setRotation(g_settings.orientation == 0 ? 3 : 1);
   u8g2.setFontMode(1);
   u8g2.setForegroundColor(1);
   u8g2.setBackgroundColor(0);
@@ -2010,6 +2040,50 @@ static void ensureOffsetsUpTo(int targetPage) {
   }
 }
 
+// Recompute page boundaries for the currently-known book under the new layout
+// (font size / line spacing). Keeps the user near the same byte offset they
+// were at before the change. Works whether or not the file handle is currently
+// open — reopens transiently if the book was closed (e.g. user is in a menu).
+static void relayoutCurrentBook() {
+  if (g_reader.currentBookPath.length() == 0) return;
+  if (g_reader.knownPages <= 0) return;
+
+  bool wasOpen = (bool)g_reader.file;
+  if (!wasOpen) {
+    if (!reopenCurrentBookIfNeeded()) return;
+  }
+
+  int oldIdx = g_reader.pageIndex;
+  if (oldIdx < 0) oldIdx = 0;
+  if (oldIdx >= g_reader.knownPages) oldIdx = g_reader.knownPages - 1;
+  uint32_t snapshot = g_reader.pageOffsets[oldIdx];
+
+  g_reader.knownPages = 1;
+  g_reader.pageOffsets[0] = 0;
+  g_reader.eofReached = false;
+  resetOffsetCache();
+
+  // Walk forward until the latest known page starts past the snapshot, or EOF.
+  while (!g_reader.eofReached && g_reader.knownPages < MAX_PAGES) {
+    uint32_t lastOff = g_reader.pageOffsets[g_reader.knownPages - 1];
+    if (lastOff > snapshot) break;
+    int prevKnown = g_reader.knownPages;
+    ensureOffsetsUpTo(g_reader.knownPages);
+    if (g_reader.knownPages == prevKnown) break;
+  }
+
+  int newIdx = g_reader.knownPages - 1;
+  while (newIdx > 0 && g_reader.pageOffsets[newIdx] > snapshot) newIdx--;
+  g_reader.pageIndex = newIdx;
+
+  if (g_reader.currentBookKey.length() > 0) {
+    prefs.putInt((g_reader.currentBookKey + "_p").c_str(), newIdx);
+  }
+  savePageOffsetCacheForBook(g_reader.currentBookPath, g_reader.file.size());
+
+  if (!wasOpen) safeCloseCurrentBook();
+}
+
 // ============================================================================
 //  Reader open / render
 // ============================================================================
@@ -2255,6 +2329,7 @@ static void drawLibrary() {
     bool isSystem = (g_library.entryTypes[idx] == LIB_ENTRY_BOOKMARKS ||
                      g_library.entryTypes[idx] == LIB_ENTRY_LIST ||
                      g_library.entryTypes[idx] == LIB_ENTRY_ABOUT ||
+                     g_library.entryTypes[idx] == LIB_ENTRY_SETTINGS ||
                      g_library.entryTypes[idx] == LIB_ENTRY_UPLOAD);
     bool boldText = (idx == g_library.selectedItem);
     drawMenuBulletRow(y, label, idx == g_library.selectedItem, boldText, g_library.entryDepths[idx], isSystem);
@@ -2356,6 +2431,113 @@ static void drawAbout() {
   }
 
   display.update();
+}
+
+// ============================================================================
+//  Settings (on-device)
+// ============================================================================
+enum SettingsRow {
+  SET_ROW_LINE_SPACING = 0,
+  SET_ROW_ORIENTATION,
+  SET_ROW_BACK,
+  SET_ROW_COUNT
+};
+
+static const int SETTINGS_LINE_GAP_MIN = 0;
+static const int SETTINGS_LINE_GAP_MAX = 8;
+
+static String settingsRowLabel(int row) {
+  switch (row) {
+    case SET_ROW_LINE_SPACING: {
+      int v = (row == g_settingsUi.selectedItem && g_settingsUi.editing) ? g_settingsUi.editValue : g_settings.lineGap;
+      return "Line spacing: " + String(v) + "px";
+    }
+    case SET_ROW_ORIENTATION: {
+      int v = (row == g_settingsUi.selectedItem && g_settingsUi.editing) ? g_settingsUi.editValue : g_settings.orientation;
+      return String("Orientation: ") + (v == 0 ? "Normal" : "Flipped");
+    }
+    case SET_ROW_BACK: return "Back";
+  }
+  return "";
+}
+
+static void drawSettings() {
+  prepareMenuFrame();
+  u8g2.setFont(MAIN_FONT);
+  int ascent = u8g2.getFontAscent();
+  int descent = u8g2.getFontDescent();
+  int rowGap = g_settings.lineGap;
+  int lineH = (ascent - descent) + rowGap + 1;
+  int y = drawSectionHeader("Settings", true);
+
+  for (int i = 0; i < SET_ROW_COUNT; i++) {
+    String label = settingsRowLabel(i);
+    bool selected = (i == g_settingsUi.selectedItem);
+    bool bold = selected;
+    if (selected && g_settingsUi.editing) {
+      label = "> " + label;
+    }
+    drawMenuBulletRow(y, label, selected, bold, 0, false);
+    y += lineH;
+  }
+
+  display.update();
+}
+
+static void handleModeSettings() {
+  if (!g_settingsUi.editing) {
+    if (btns.shortClick) {
+      g_settingsUi.selectedItem = (g_settingsUi.selectedItem + 1) % SET_ROW_COUNT;
+      drawSettings();
+      return;
+    }
+    if (btns.doubleClick) {
+      if (g_settingsUi.selectedItem == SET_ROW_BACK) {
+        mode = MODE_LIBRARY;
+        drawLibrary();
+        return;
+      }
+      g_settingsUi.editing = true;
+      if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+        g_settingsUi.editValue = g_settings.lineGap;
+      } else if (g_settingsUi.selectedItem == SET_ROW_ORIENTATION) {
+        g_settingsUi.editValue = g_settings.orientation;
+      }
+      drawSettings();
+      return;
+    }
+    return;
+  }
+
+  // Editing
+  if (btns.shortClick) {
+    if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+      g_settingsUi.editValue++;
+      if (g_settingsUi.editValue > SETTINGS_LINE_GAP_MAX) g_settingsUi.editValue = SETTINGS_LINE_GAP_MIN;
+      g_settings.lineGap = g_settingsUi.editValue;
+      invalidateMetrics();
+    } else if (g_settingsUi.selectedItem == SET_ROW_ORIENTATION) {
+      g_settingsUi.editValue = (g_settingsUi.editValue == 0) ? 1 : 0;
+      g_settings.orientation = g_settingsUi.editValue;
+    }
+    drawSettings();
+    return;
+  }
+
+  if (btns.doubleClick) {
+    if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+      g_settings.lineGap = g_settingsUi.editValue;
+      prefs.putInt("cfg_lgap", g_settings.lineGap);
+      invalidateMetrics();
+      relayoutCurrentBook();
+    } else if (g_settingsUi.selectedItem == SET_ROW_ORIENTATION) {
+      g_settings.orientation = g_settingsUi.editValue;
+      prefs.putInt("cfg_orient", g_settings.orientation);
+    }
+    g_settingsUi.editing = false;
+    drawSettings();
+    return;
+  }
 }
 
 static void drawBookmarksBookSelect() {
@@ -3294,6 +3476,11 @@ static void handleSettings() {
   String lg1 = (g_settings.lineGap == 1) ? " selected" : "";
   String lg2 = (g_settings.lineGap == 2) ? " selected" : "";
   String lg3 = (g_settings.lineGap == 3) ? " selected" : "";
+  String lg4 = (g_settings.lineGap == 4) ? " selected" : "";
+  String lg5 = (g_settings.lineGap == 5) ? " selected" : "";
+  String lg6 = (g_settings.lineGap == 6) ? " selected" : "";
+  String lg7 = (g_settings.lineGap == 7) ? " selected" : "";
+  String lg8 = (g_settings.lineGap == 8) ? " selected" : "";
 
   bool hasSleepImg = FS.exists("/sleep.bin");
 
@@ -3344,6 +3531,11 @@ static void handleSettings() {
   out += "<option value='1'"; out += lg1; out += ">1 px &mdash; normal</option>";
   out += "<option value='2'"; out += lg2; out += ">2 px &mdash; relaxed</option>";
   out += "<option value='3'"; out += lg3; out += ">3 px &mdash; loose</option>";
+  out += "<option value='4'"; out += lg4; out += ">4 px</option>";
+  out += "<option value='5'"; out += lg5; out += ">5 px</option>";
+  out += "<option value='6'"; out += lg6; out += ">6 px</option>";
+  out += "<option value='7'"; out += lg7; out += ">7 px</option>";
+  out += "<option value='8'"; out += lg8; out += ">8 px &mdash; max</option>";
   out +=
     "</select><div class='hint'>A small change here can make text much easier to scan.</div></div>"
     "</div>"
@@ -3368,9 +3560,11 @@ static void handleSettings() {
 }
 
 static void handleSettingsPost() {
+  bool layoutChanged = false;
   if (server.hasArg("font")) {
     int fs = server.arg("font").toInt();
     if (fs != 8 && fs != 10 && fs != 12 && fs != 14) fs = 10;
+    if (fs != g_settings.fontSize) layoutChanged = true;
     applyFontSize(fs);
     prefs.putInt("cfg_font", fs);
   }
@@ -3384,11 +3578,13 @@ static void handleSettingsPost() {
   if (server.hasArg("lgap")) {
     int lg = server.arg("lgap").toInt();
     if (lg < 0) lg = 0;
-    if (lg > 4) lg = 4;
+    if (lg > 8) lg = 8;
+    if (lg != g_settings.lineGap) layoutChanged = true;
     g_settings.lineGap = lg;
     prefs.putInt("cfg_lgap", lg);
     invalidateMetrics();
   }
+  if (layoutChanged) relayoutCurrentBook();
   server.sendHeader("Location", "/settings");
   server.send(302, "text/plain", "");
 }
@@ -3983,6 +4179,14 @@ static void handleModeLibrary() {
     return;
   }
 
+  if (entryType == LIB_ENTRY_SETTINGS) {
+    g_settingsUi.selectedItem = 0;
+    g_settingsUi.editing = false;
+    mode = MODE_SETTINGS;
+    drawSettings();
+    return;
+  }
+
   startUploadMode();
 }
 
@@ -4101,6 +4305,7 @@ void loop() {
   switch (mode) {
     case MODE_UPLOAD:         handleModeUpload(); break;
     case MODE_ABOUT:          handleModeAbout(); break;
+    case MODE_SETTINGS:       handleModeSettings(); break;
     case MODE_LIST:           handleModeList(); break;
     case MODE_BM_BOOK_SELECT: handleModeBookmarkBookSelect(); break;
     case MODE_BM_LIST:        handleModeBookmarkList(); break;
