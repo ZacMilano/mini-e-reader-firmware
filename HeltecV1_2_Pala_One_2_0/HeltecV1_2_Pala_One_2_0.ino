@@ -2437,7 +2437,8 @@ static void drawAbout() {
 //  Settings (on-device)
 // ============================================================================
 enum SettingsRow {
-  SET_ROW_LINE_SPACING = 0,
+  SET_ROW_FONT_SIZE = 0,
+  SET_ROW_LINE_SPACING,
   SET_ROW_ORIENTATION,
   SET_ROW_BACK,
   SET_ROW_COUNT
@@ -2446,8 +2447,24 @@ enum SettingsRow {
 static const int SETTINGS_LINE_GAP_MIN = 0;
 static const int SETTINGS_LINE_GAP_MAX = 8;
 
+static const int SETTINGS_FONT_SIZES[] = {8, 10, 12, 14};
+static const int SETTINGS_FONT_SIZE_COUNT = 4;
+
+static int nextFontSize(int current) {
+  for (int i = 0; i < SETTINGS_FONT_SIZE_COUNT; i++) {
+    if (SETTINGS_FONT_SIZES[i] == current) {
+      return SETTINGS_FONT_SIZES[(i + 1) % SETTINGS_FONT_SIZE_COUNT];
+    }
+  }
+  return SETTINGS_FONT_SIZES[0];
+}
+
 static String settingsRowLabel(int row) {
   switch (row) {
+    case SET_ROW_FONT_SIZE: {
+      int v = (row == g_settingsUi.selectedItem && g_settingsUi.editing) ? g_settingsUi.editValue : g_settings.fontSize;
+      return "Font size: " + String(v) + "px";
+    }
     case SET_ROW_LINE_SPACING: {
       int v = (row == g_settingsUi.selectedItem && g_settingsUi.editing) ? g_settingsUi.editValue : g_settings.lineGap;
       return "Line spacing: " + String(v) + "px";
@@ -2498,7 +2515,9 @@ static void handleModeSettings() {
         return;
       }
       g_settingsUi.editing = true;
-      if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+      if (g_settingsUi.selectedItem == SET_ROW_FONT_SIZE) {
+        g_settingsUi.editValue = g_settings.fontSize;
+      } else if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
         g_settingsUi.editValue = g_settings.lineGap;
       } else if (g_settingsUi.selectedItem == SET_ROW_ORIENTATION) {
         g_settingsUi.editValue = g_settings.orientation;
@@ -2511,7 +2530,10 @@ static void handleModeSettings() {
 
   // Editing
   if (btns.shortClick) {
-    if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+    if (g_settingsUi.selectedItem == SET_ROW_FONT_SIZE) {
+      g_settingsUi.editValue = nextFontSize(g_settingsUi.editValue);
+      applyFontSize(g_settingsUi.editValue);
+    } else if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
       g_settingsUi.editValue++;
       if (g_settingsUi.editValue > SETTINGS_LINE_GAP_MAX) g_settingsUi.editValue = SETTINGS_LINE_GAP_MIN;
       g_settings.lineGap = g_settingsUi.editValue;
@@ -2525,7 +2547,11 @@ static void handleModeSettings() {
   }
 
   if (btns.doubleClick) {
-    if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
+    if (g_settingsUi.selectedItem == SET_ROW_FONT_SIZE) {
+      applyFontSize(g_settingsUi.editValue);
+      prefs.putInt("cfg_font", g_settings.fontSize);
+      relayoutCurrentBook();
+    } else if (g_settingsUi.selectedItem == SET_ROW_LINE_SPACING) {
       g_settings.lineGap = g_settingsUi.editValue;
       prefs.putInt("cfg_lgap", g_settings.lineGap);
       invalidateMetrics();
