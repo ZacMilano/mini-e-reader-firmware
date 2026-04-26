@@ -1714,7 +1714,7 @@ static void drawBatteryTopRight() {
 // ============================================================================
 static void beginPageCanvas(bool clearMem = true) {
   if (clearMem) display.clearMemory();
-  display.landscape();
+  display.setRotation(1);
   u8g2.setFontMode(1);
   u8g2.setForegroundColor(1);
   u8g2.setBackgroundColor(0);
